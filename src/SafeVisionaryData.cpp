@@ -24,7 +24,10 @@
 #include "sick_safevisionary_base/CRC.h"
 #include "sick_safevisionary_base/SafeVisionaryData.h"
 #include "sick_safevisionary_base/VisionaryEndian.h"
+#include <algorithm>
+#include <cstring>
 #include <iostream>
+#include <limits>
 // TinyXML-2 XML DOM parser
 #include "sick_safevisionary_base/tinyxml2.h"
 
@@ -37,7 +40,8 @@ namespace {
 constexpr std::uint16_t VERSION_SEGMENT_DEPTHMAP = 0x0002u;
 
 /// Version number of the Blob segment ROI
-constexpr std::uint16_t VERSION_SEGMENT_DEVICESTATUS = 0x0001u;
+constexpr std::uint16_t VERSION_SEGMENT_DEVICESTATUS_V1 = 0x0001u;
+constexpr std::uint16_t VERSION_SEGMENT_DEVICESTATUS_V2 = 0x0002u;
 
 /// Version number of the Blob segment ROI
 constexpr std::uint16_t VERSION_SEGMENT_ROI = 0x0001u;
@@ -51,6 +55,9 @@ constexpr std::uint16_t VERSION_SEGMENT_FIELDINFORMATION = 0x0001u;
 /// Version number of the Blob segment Logic Signal
 constexpr std::uint16_t VERSION_SEGMENT_LOGICSIGNALS = 0x0001u;
 
+/// Version number of the Blob segment Safety
+constexpr std::uint16_t VERSION_SEGMENT_SAFETY = 0x0001u;
+
 /// Version number of the Blob segment IMU
 constexpr std::uint16_t VERSION_SEGMENT_IMU = 0x0001u;
 
@@ -60,19 +67,31 @@ constexpr std::uint16_t DISTANCE_MAP_FILTERED_FLAG = 1u << 0;
 /** Flag whether the intrusion data is valid in the pixel state map */
 constexpr std::uint16_t INTRUDED_PIXEL_STATE_VALID_FLAG = 1u << 1;
 
-/** Flag whether data stream is throttled or not  */
-constexpr std::uint16_t DATA_STREAM_THROTTLED_FLAG = 1u << 2;
+/** Flag whether the ghost filter was active for the depth map. */
+constexpr std::uint16_t GHOST_FILTER_ACTIVE_FLAG = 1u << 2;
 
 } // namespace
 SafeVisionaryData::SafeVisionaryData()
   : VisionaryData()
+  , m_dataSetsActive()
   , m_distanceByteDepth(0u)
   , m_intensityByteDepth(0u)
   , m_stateByteDepth(0u)
   , m_deviceStatus(DEVICE_STATUS::DEVICE_STATUS_INVALID)
+  , m_expectedRoiCount(0u)
   , m_flags(0u)
+  , m_hasConfigurationChecksum(false)
   , m_lastDataHandlerError(DataHandlerError::OK)
 {
+  m_changeCounter = std::numeric_limits<uint_fast32_t>::max();
+  std::fill(m_segmentTimestamp, m_segmentTimestamp + TOTAL_SEGMENT_NUMBER, 0u);
+  std::memset(&m_roiData, 0, sizeof(m_roiData));
+  std::memset(&m_deviceStatusData, 0, sizeof(m_deviceStatusData));
+  std::memset(&m_localIOsData, 0, sizeof(m_localIOsData));
+  std::memset(&m_fieldInformationData, 0, sizeof(m_fieldInformationData));
+  std::memset(&m_logicSignalsData, 0, sizeof(m_logicSignalsData));
+  std::memset(&m_safetyData, 0, sizeof(m_safetyData));
+  std::memset(&m_IMUData, 0, sizeof(m_IMUData));
 }
 
 SafeVisionaryData::~SafeVisionaryData() {}
@@ -121,6 +140,18 @@ bool SafeVisionaryData::parseXML(const std::string& xmlString, uint32_t changeCo
 
       ptHasNodeOrZero                = ptDataSetsTree->FirstChildElement("DataSetROI");
       m_dataSetsActive.hasDataSetROI = (ptHasNodeOrZero != 0);
+      m_expectedRoiCount             = 0u;
+      if (ptHasNodeOrZero != 0)
+      {
+        auto const* formatDescription = ptHasNodeOrZero->FirstChildElement("FormatDescriptionROI");
+        auto const* measurementTask =
+          formatDescription != 0 ? formatDescription->FirstChildElement("MeasurementTask") : 0;
+        while (measurementTask != 0)
+        {
+          ++m_expectedRoiCount;
+          measurementTask = measurementTask->NextSiblingElement("MeasurementTask");
+        }
+      }
 
       ptHasNodeOrZero                     = ptDataSetsTree->FirstChildElement("DataSetLocalIOs");
       m_dataSetsActive.hasDataSetLocalIOs = (ptHasNodeOrZero != 0);
@@ -130,6 +161,9 @@ bool SafeVisionaryData::parseXML(const std::string& xmlString, uint32_t changeCo
 
       ptHasNodeOrZero = ptDataSetsTree->FirstChildElement("DataSetLogicalSignals");
       m_dataSetsActive.hasDataSetLogicSignals = (ptHasNodeOrZero != 0);
+
+      ptHasNodeOrZero                  = ptDataSetsTree->FirstChildElement("DataSetSafety");
+      m_dataSetsActive.hasDataSetSafety = (ptHasNodeOrZero != 0);
 
       ptHasNodeOrZero                = ptDataSetsTree->FirstChildElement("DataSetIMU");
       m_dataSetsActive.hasDataSetIMU = (ptHasNodeOrZero != 0);
@@ -437,9 +471,27 @@ bool SafeVisionaryData::parseBinaryData(std::vector<uint8_t>::iterator itBuf, si
 
 bool SafeVisionaryData::parseRoiData(std::vector<uint8_t>::iterator itBuf, size_t size)
 {
+  constexpr size_t SEGMENT_PREFIX_SIZE = sizeof(uint64_t) + sizeof(uint16_t);
+  constexpr size_t ROI_ELEMENT_SIZE = sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) +
+                                      sizeof(uint16_t);
+
+  if (size < sizeof(uint32_t))
+  {
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_ROI;
+    return false;
+  }
+
   // get length of data segment ROI
   const uint32_t length = readUnalignLittleEndian<uint32_t>(&*itBuf);
   itBuf += sizeof(uint32_t);
+
+  // length does not include the second length field, so add 4 bytes
+  if (length < 8u + SEGMENT_PREFIX_SIZE || (static_cast<size_t>(length) + sizeof(uint32_t)) != size)
+  {
+    std::printf("Malformed data, length of data segment ROI does not match package size.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_ROI;
+    return false;
+  }
 
   //-----------------------------------------------
   // Data ends with a CRC32 field and a copy of the length byte
@@ -451,14 +503,6 @@ bool SafeVisionaryData::parseRoiData(std::vector<uint8_t>::iterator itBuf, size_
   {
     std::printf("Malformed data, CRC32 checksum of data segment ROI does not match.\n");
     m_lastDataHandlerError = DataHandlerError::INVALID_CRC_SEGMENT_ROI;
-    return false;
-  }
-
-  // length does not include the second length field, so add 4 bytes
-  if ((length + sizeof(uint32_t)) != size)
-  {
-    std::printf("Malformed data, length of data segment ROI does not match package size.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_ROI;
     return false;
   }
 
@@ -487,17 +531,78 @@ bool SafeVisionaryData::parseRoiData(std::vector<uint8_t>::iterator itBuf, size_
     return false;
   }
 
-  // copy ROI data
-  memcpy(&m_roiData, &*itBuf, sizeof(m_roiData));
+  const size_t roiPayloadSize = dataSize - SEGMENT_PREFIX_SIZE;
+  if ((roiPayloadSize % ROI_ELEMENT_SIZE) != 0u)
+  {
+    std::printf("Malformed data, ROI payload is not a sequence of ROI elements.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_ROI;
+    return false;
+  }
+
+  const size_t roiCount = roiPayloadSize / ROI_ELEMENT_SIZE;
+  if (m_expectedRoiCount != 0u && roiCount != m_expectedRoiCount)
+  {
+    std::printf("Malformed data, ROI element count does not match the XML metadata.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_ROI;
+    return false;
+  }
+  m_roiDataElements.clear();
+  m_roiDataElements.reserve(roiCount);
+  std::memset(&m_roiData, 0, sizeof(m_roiData));
+
+  for (size_t roiIndex = 0; roiIndex < roiCount; ++roiIndex)
+  {
+    ROI_ELEMENT roi{};
+    roi.id = readUnalignLittleEndian<uint8_t>(&*itBuf);
+    itBuf += sizeof(uint8_t);
+
+    const uint8_t result = readUnalignLittleEndian<uint8_t>(&*itBuf);
+    itBuf += sizeof(uint8_t);
+    roi.result.taskResult    = (result >> 0u) & 1u;
+    roi.result.resultSafe    = (result >> 1u) & 1u;
+    roi.result.resultValid   = (result >> 2u) & 1u;
+    roi.result.distanceValid = (result >> 3u) & 1u;
+    roi.result.distanceSafe  = (result >> 4u) & 1u;
+
+    roi.safetyRelatedData.u16All = readUnalignLittleEndian<uint16_t>(&*itBuf);
+    itBuf += sizeof(uint16_t);
+    roi.distanceValue = readUnalignLittleEndian<uint16_t>(&*itBuf);
+    itBuf += sizeof(uint16_t);
+
+    m_roiDataElements.push_back(roi);
+    if (roiIndex < MAX_ROI_VALUES)
+    {
+      m_roiData.roiData[roiIndex] = roi;
+    }
+  }
 
   return true;
 }
 
 bool SafeVisionaryData::parseDeviceStatusData(std::vector<uint8_t>::iterator itBuf, size_t size)
 {
+  constexpr size_t SEGMENT_PREFIX_SIZE = sizeof(uint64_t) + sizeof(uint16_t);
+  constexpr size_t DEVICE_STATUS_V1_PAYLOAD_SIZE = 2u + 3u * sizeof(uint32_t) + 4u + 1u;
+  constexpr size_t DEVICE_STATUS_V2_PAYLOAD_SIZE =
+    DEVICE_STATUS_V1_PAYLOAD_SIZE + sizeof(uint32_t);
+
+  if (size < sizeof(uint32_t))
+  {
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_DEVICESTATUS;
+    return false;
+  }
+
   // get length of data segment Device Status
   const uint32_t length = readUnalignLittleEndian<uint32_t>(&*itBuf);
   itBuf += sizeof(uint32_t);
+
+  // length does not include the second length field, so add 4 bytes
+  if (length < 8u + SEGMENT_PREFIX_SIZE || (static_cast<size_t>(length) + sizeof(uint32_t)) != size)
+  {
+    std::printf("Malformed data, length of Device Status header does not match package size.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_DEVICESTATUS;
+    return false;
+  }
 
   //-----------------------------------------------
   // Data ends with a CRC32 field and a copy of the length byte
@@ -509,14 +614,6 @@ bool SafeVisionaryData::parseDeviceStatusData(std::vector<uint8_t>::iterator itB
   {
     std::printf("Malformed data, CRC32 checksum of data segment Device Status does not match.\n");
     m_lastDataHandlerError = DataHandlerError::INVALID_CRC_SEGMENT_DEVICESTATUS;
-    return false;
-  }
-
-  // length does not include the second length field, so add 4 bytes
-  if ((length + sizeof(uint32_t)) != size)
-  {
-    std::printf("Malformed data, length of Device Status header does not match package size.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_DEVICESTATUS;
     return false;
   }
 
@@ -538,15 +635,58 @@ bool SafeVisionaryData::parseDeviceStatusData(std::vector<uint8_t>::iterator itB
   const uint16_t version = readUnalignLittleEndian<uint16_t>(&*itBuf);
   itBuf += sizeof(uint16_t);
 
-  if (version != VERSION_SEGMENT_DEVICESTATUS)
+  const size_t payloadSize = dataSize - SEGMENT_PREFIX_SIZE;
+  const bool isVersion1 = version == VERSION_SEGMENT_DEVICESTATUS_V1;
+  const bool isVersion2 = version == VERSION_SEGMENT_DEVICESTATUS_V2;
+  if (!isVersion1 && !isVersion2)
   {
     std::printf("Unsupported version of data segment Device Status\n");
     m_lastDataHandlerError = DataHandlerError::INVALID_VERSION_SEGMENT_DEVICESTATUS;
     return false;
   }
 
-  // copy device status data
-  memcpy(&m_deviceStatusData, &*itBuf, sizeof(m_deviceStatusData));
+  const size_t expectedPayloadSize =
+    isVersion2 ? DEVICE_STATUS_V2_PAYLOAD_SIZE : DEVICE_STATUS_V1_PAYLOAD_SIZE;
+  if (payloadSize != expectedPayloadSize)
+  {
+    std::printf("Malformed data, Device Status payload size does not match its version.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_DEVICESTATUS;
+    return false;
+  }
+
+  std::memset(&m_deviceStatusData, 0, sizeof(m_deviceStatusData));
+  const uint16_t generalStatus = readUnalignLittleEndian<uint16_t>(&*itBuf);
+  itBuf += sizeof(uint16_t);
+  m_deviceStatusData.generalStatus.runModeActive          = (generalStatus >> 0u) & 1u;
+  m_deviceStatusData.generalStatus.deviceError            = (generalStatus >> 1u) & 1u;
+  m_deviceStatusData.generalStatus.applicationError       = (generalStatus >> 2u) & 1u;
+  m_deviceStatusData.generalStatus.sleepMode              = (generalStatus >> 3u) & 1u;
+  m_deviceStatusData.generalStatus.waitForInput           = (generalStatus >> 4u) & 1u;
+  m_deviceStatusData.generalStatus.waitForCluster         = (generalStatus >> 5u) & 1u;
+  m_deviceStatusData.generalStatus.contaminationWarning   = (generalStatus >> 6u) & 1u;
+  m_deviceStatusData.generalStatus.contaminationError     = (generalStatus >> 7u) & 1u;
+  m_deviceStatusData.generalStatus.deadZoneDetection      = (generalStatus >> 8u) & 1u;
+  m_deviceStatusData.generalStatus.temperatureWarning     = (generalStatus >> 9u) & 1u;
+  m_deviceStatusData.generalStatus.deadZoneWarning        = (generalStatus >> 10u) & 1u;
+
+  m_deviceStatusData.COPSaftyRelated = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  itBuf += sizeof(uint32_t);
+  m_deviceStatusData.COPNonSaftyRelated = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  itBuf += sizeof(uint32_t);
+  m_deviceStatusData.COPResetRequired = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  itBuf += sizeof(uint32_t);
+
+  m_deviceStatusData.activeMonitoringCase.currentCaseNumberMonitoringCase1 = *itBuf++;
+  m_deviceStatusData.activeMonitoringCase.currentCaseNumberMonitoringCase2 = *itBuf++;
+  m_deviceStatusData.activeMonitoringCase.currentCaseNumberMonitoringCase3 = *itBuf++;
+  m_deviceStatusData.activeMonitoringCase.currentCaseNumberMonitoringCase4 = *itBuf++;
+  m_deviceStatusData.contaminationLevel = *itBuf++;
+
+  m_hasConfigurationChecksum = isVersion2;
+  if (isVersion2)
+  {
+    m_deviceStatusData.configurationChecksum = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  }
 
   return true;
 }
@@ -729,6 +869,82 @@ bool SafeVisionaryData::parseLogicSignalsData(std::vector<uint8_t>::iterator itB
   return true;
 }
 
+bool SafeVisionaryData::parseSafetyData(std::vector<uint8_t>::iterator itBuf, size_t size)
+{
+  constexpr size_t SEGMENT_PREFIX_SIZE = sizeof(uint64_t) + sizeof(uint16_t);
+  constexpr size_t SAFETY_FIXED_PAYLOAD_SIZE =
+    sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t);
+
+  if (size < sizeof(uint32_t))
+  {
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
+    return false;
+  }
+
+  const uint32_t length = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  itBuf += sizeof(uint32_t);
+  if (length < 8u + SEGMENT_PREFIX_SIZE + SAFETY_FIXED_PAYLOAD_SIZE ||
+      (static_cast<size_t>(length) + sizeof(uint32_t)) != size)
+  {
+    std::printf("Malformed data, length of data segment Safety does not match package size.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
+    return false;
+  }
+
+  const uint32_t dataSize        = length - 8u;
+  const uint32_t crc32           = readUnalignLittleEndian<uint32_t>(&*(itBuf + dataSize));
+  const uint32_t crc32Calculated = ~CRC_calcCrc32Block(&*itBuf, dataSize, CRC_DEFAULT_INIT_VALUE32);
+  if (crc32 != crc32Calculated)
+  {
+    std::printf("Malformed data, CRC32 checksum of data segment Safety does not match.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_CRC_SEGMENT_SAFETY;
+    return false;
+  }
+
+  const uint32_t lengthCopy = readUnalignLittleEndian<uint32_t>(&*(itBuf + dataSize + 4u));
+  if (length != lengthCopy)
+  {
+    std::printf("Malformed data, length does not match Safety data segment size.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
+    return false;
+  }
+
+  m_blobTimestamp                    = readUnalignLittleEndian<uint64_t>(&*itBuf);
+  m_segmentTimestamp[SAFETY_SEGMENT] = m_blobTimestamp;
+  itBuf += sizeof(uint64_t);
+
+  const uint16_t version = readUnalignLittleEndian<uint16_t>(&*itBuf);
+  itBuf += sizeof(uint16_t);
+  if (version != VERSION_SEGMENT_SAFETY)
+  {
+    std::printf("Unsupported version of data segment Safety\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_VERSION_SEGMENT_SAFETY;
+    return false;
+  }
+
+  const size_t payloadSize = dataSize - SEGMENT_PREFIX_SIZE;
+  const size_t stateMapSize = payloadSize - SAFETY_FIXED_PAYLOAD_SIZE;
+  const size_t numberOfPixels = static_cast<size_t>(m_cameraParams.width) *
+                                static_cast<size_t>(m_cameraParams.height);
+  const size_t expectedStateMapSize = (numberOfPixels + 7u) / 8u;
+  if (numberOfPixels == 0u || stateMapSize != expectedStateMapSize)
+  {
+    std::printf("Malformed data, Safety state-map size does not match the depth-map dimensions.\n");
+    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
+    return false;
+  }
+
+  m_safetyData.frameNumber = readUnalignLittleEndian<uint32_t>(&*itBuf);
+  itBuf += sizeof(uint32_t);
+  m_safetyData.flags = readUnalignLittleEndian<uint16_t>(&*itBuf);
+  itBuf += sizeof(uint16_t);
+  m_safetyData.safeLifeCounter = readUnalignLittleEndian<uint16_t>(&*itBuf);
+  itBuf += sizeof(uint16_t);
+
+  m_safetyStateMap.assign(itBuf, itBuf + stateMapSize);
+  return true;
+}
+
 bool SafeVisionaryData::parseIMUData(std::vector<uint8_t>::iterator itBuf, size_t size)
 {
   // get length of data segment IMU
@@ -824,6 +1040,11 @@ bool SafeVisionaryData::isIntrudedPixelStateValid() const
   return (m_flags & INTRUDED_PIXEL_STATE_VALID_FLAG);
 }
 
+bool SafeVisionaryData::isGhostFilterActive() const
+{
+  return (m_flags & GHOST_FILTER_ACTIVE_FLAG);
+}
+
 uint16_t SafeVisionaryData::getFlags() const
 {
   return m_flags;
@@ -832,6 +1053,11 @@ uint16_t SafeVisionaryData::getFlags() const
 const ROI_DATA& SafeVisionaryData::getRoiData() const
 {
   return m_roiData;
+}
+
+const std::vector<ROI_ELEMENT>& SafeVisionaryData::getRoiDataElements() const
+{
+  return m_roiDataElements;
 }
 
 DEVICE_STATUS_ELEMENT SafeVisionaryData::getDeviceStatusData() const
@@ -852,6 +1078,21 @@ const FIELDINFORMATION_DATA& SafeVisionaryData::getFieldInformationData() const
 const LOGICSIGNALS_DATA& SafeVisionaryData::getLogicSignalsData() const
 {
   return m_logicSignalsData;
+}
+
+const SAFETY_DATA& SafeVisionaryData::getSafetyData() const
+{
+  return m_safetyData;
+}
+
+const std::vector<uint8_t>& SafeVisionaryData::getSafetyStateMap() const
+{
+  return m_safetyStateMap;
+}
+
+bool SafeVisionaryData::hasConfigurationChecksum() const
+{
+  return m_hasConfigurationChecksum;
 }
 
 const IMU_ELEMENT SafeVisionaryData::getIMUData() const
@@ -885,11 +1126,13 @@ void SafeVisionaryData::clearData(uint32_t changedCounter)
   if (!m_dataSetsActive.hasDataSetDeviceStatus)
   {
     memset(&m_deviceStatusData, 0u, sizeof(m_deviceStatusData));
+    m_hasConfigurationChecksum = false;
   }
 
   if (!m_dataSetsActive.hasDataSetROI)
   {
     memset(&m_roiData, 0u, sizeof(m_roiData));
+    m_roiDataElements.clear();
   }
 
   if (!m_dataSetsActive.hasDataSetLocalIOs)
@@ -905,6 +1148,12 @@ void SafeVisionaryData::clearData(uint32_t changedCounter)
   if (!m_dataSetsActive.hasDataSetLogicSignals)
   {
     memset(&m_logicSignalsData, 0u, sizeof(m_logicSignalsData));
+  }
+
+  if (!m_dataSetsActive.hasDataSetSafety)
+  {
+    memset(&m_safetyData, 0u, sizeof(m_safetyData));
+    m_safetyStateMap.clear();
   }
 
   if (!m_dataSetsActive.hasDataSetIMU)
