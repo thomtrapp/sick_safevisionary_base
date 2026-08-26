@@ -58,6 +58,7 @@ struct DataSetsActive
   bool hasDataSetLocalIOs;
   bool hasDataSetFieldInfo;
   bool hasDataSetLogicSignals;
+  bool hasDataSetSafety;
   bool hasDataSetIMU;
 };
 
@@ -165,6 +166,14 @@ public:
   /// Parse the Logic Signals data from the Blob segment "Logic Signals"
   /// \return Returns true when parsing was successful.
   virtual bool parseLogicSignalsData(std::vector<uint8_t>::iterator itBuf, size_t length)
+  {
+    (void)(itBuf);
+    (void)(length);
+    return false;
+  };
+
+  /// Parse the safety state data from the Blob segment "Safety".
+  virtual bool parseSafetyData(std::vector<uint8_t>::iterator itBuf, size_t length)
   {
     (void)(itBuf);
     (void)(length);
