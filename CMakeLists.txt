@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.10)
 project(sick_safevisionary_base)
 
 if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
@@ -74,6 +74,16 @@ install(
    PATTERN "*.h"
    PATTERN "*.hpp"
  )
+
+install(
+  FILES LICENSE
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY third-party-licenses/
+  DESTINATION share/${PROJECT_NAME}/third-party-licenses
+)
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(${PROJECT_NAME}ConfigVersion.cmake VERSION 1.0.0
