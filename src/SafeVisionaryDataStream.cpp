@@ -683,15 +683,7 @@ bool SafeVisionaryDataStream::parseBlobData()
     if (dataSetsActive.hasDataSetSafety)
     {
       currentSegment++;
-      size_t segmentSizeSafety =
-        m_offsetSegment[currentSegment + 1] - m_offsetSegment[currentSegment];
-      auto beginOfDataSegmentSafetyIter =
-        m_blobDataBuffer.begin() + beginOfBlobData + m_offsetSegment[currentSegment];
-      if (!m_dataHandler->parseSafetyData(beginOfDataSegmentSafetyIter, segmentSizeSafety))
-      {
-        m_lastDataStreamError = DataStreamError::DATA_SEGMENT_SAFETY_ERROR;
-        return false;
-      }
+      // A potential safety-segment parsing callback would be called here.
     }
     if (dataSetsActive.hasDataSetIMU)
     {

@@ -172,14 +172,6 @@ public:
     return false;
   };
 
-  /// Parse the safety state data from the Blob segment "Safety".
-  virtual bool parseSafetyData(std::vector<uint8_t>::iterator itBuf, size_t length)
-  {
-    (void)(itBuf);
-    (void)(length);
-    return false;
-  };
-
   /// Parse the IMU data from the Blob segment "IMU"
   /// \return Returns true when parsing was successful.
   virtual bool parseIMUData(std::vector<uint8_t>::iterator itBuf, size_t length)

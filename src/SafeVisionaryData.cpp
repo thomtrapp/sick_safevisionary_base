@@ -55,9 +55,6 @@ constexpr std::uint16_t VERSION_SEGMENT_FIELDINFORMATION = 0x0001u;
 /// Version number of the Blob segment Logic Signal
 constexpr std::uint16_t VERSION_SEGMENT_LOGICSIGNALS = 0x0001u;
 
-/// Version number of the Blob segment Safety
-constexpr std::uint16_t VERSION_SEGMENT_SAFETY = 0x0001u;
-
 /// Version number of the Blob segment IMU
 constexpr std::uint16_t VERSION_SEGMENT_IMU = 0x0001u;
 
@@ -90,7 +87,6 @@ SafeVisionaryData::SafeVisionaryData()
   std::memset(&m_localIOsData, 0, sizeof(m_localIOsData));
   std::memset(&m_fieldInformationData, 0, sizeof(m_fieldInformationData));
   std::memset(&m_logicSignalsData, 0, sizeof(m_logicSignalsData));
-  std::memset(&m_safetyData, 0, sizeof(m_safetyData));
   std::memset(&m_IMUData, 0, sizeof(m_IMUData));
 }
 
@@ -869,82 +865,6 @@ bool SafeVisionaryData::parseLogicSignalsData(std::vector<uint8_t>::iterator itB
   return true;
 }
 
-bool SafeVisionaryData::parseSafetyData(std::vector<uint8_t>::iterator itBuf, size_t size)
-{
-  constexpr size_t SEGMENT_PREFIX_SIZE = sizeof(uint64_t) + sizeof(uint16_t);
-  constexpr size_t SAFETY_FIXED_PAYLOAD_SIZE =
-    sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t);
-
-  if (size < sizeof(uint32_t))
-  {
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
-    return false;
-  }
-
-  const uint32_t length = readUnalignLittleEndian<uint32_t>(&*itBuf);
-  itBuf += sizeof(uint32_t);
-  if (length < 8u + SEGMENT_PREFIX_SIZE + SAFETY_FIXED_PAYLOAD_SIZE ||
-      (static_cast<size_t>(length) + sizeof(uint32_t)) != size)
-  {
-    std::printf("Malformed data, length of data segment Safety does not match package size.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
-    return false;
-  }
-
-  const uint32_t dataSize        = length - 8u;
-  const uint32_t crc32           = readUnalignLittleEndian<uint32_t>(&*(itBuf + dataSize));
-  const uint32_t crc32Calculated = ~CRC_calcCrc32Block(&*itBuf, dataSize, CRC_DEFAULT_INIT_VALUE32);
-  if (crc32 != crc32Calculated)
-  {
-    std::printf("Malformed data, CRC32 checksum of data segment Safety does not match.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_CRC_SEGMENT_SAFETY;
-    return false;
-  }
-
-  const uint32_t lengthCopy = readUnalignLittleEndian<uint32_t>(&*(itBuf + dataSize + 4u));
-  if (length != lengthCopy)
-  {
-    std::printf("Malformed data, length does not match Safety data segment size.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
-    return false;
-  }
-
-  m_blobTimestamp                    = readUnalignLittleEndian<uint64_t>(&*itBuf);
-  m_segmentTimestamp[SAFETY_SEGMENT] = m_blobTimestamp;
-  itBuf += sizeof(uint64_t);
-
-  const uint16_t version = readUnalignLittleEndian<uint16_t>(&*itBuf);
-  itBuf += sizeof(uint16_t);
-  if (version != VERSION_SEGMENT_SAFETY)
-  {
-    std::printf("Unsupported version of data segment Safety\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_VERSION_SEGMENT_SAFETY;
-    return false;
-  }
-
-  const size_t payloadSize = dataSize - SEGMENT_PREFIX_SIZE;
-  const size_t stateMapSize = payloadSize - SAFETY_FIXED_PAYLOAD_SIZE;
-  const size_t numberOfPixels = static_cast<size_t>(m_cameraParams.width) *
-                                static_cast<size_t>(m_cameraParams.height);
-  const size_t expectedStateMapSize = (numberOfPixels + 7u) / 8u;
-  if (numberOfPixels == 0u || stateMapSize != expectedStateMapSize)
-  {
-    std::printf("Malformed data, Safety state-map size does not match the depth-map dimensions.\n");
-    m_lastDataHandlerError = DataHandlerError::INVALID_LENGTH_SEGMENT_SAFETY;
-    return false;
-  }
-
-  m_safetyData.frameNumber = readUnalignLittleEndian<uint32_t>(&*itBuf);
-  itBuf += sizeof(uint32_t);
-  m_safetyData.flags = readUnalignLittleEndian<uint16_t>(&*itBuf);
-  itBuf += sizeof(uint16_t);
-  m_safetyData.safeLifeCounter = readUnalignLittleEndian<uint16_t>(&*itBuf);
-  itBuf += sizeof(uint16_t);
-
-  m_safetyStateMap.assign(itBuf, itBuf + stateMapSize);
-  return true;
-}
-
 bool SafeVisionaryData::parseIMUData(std::vector<uint8_t>::iterator itBuf, size_t size)
 {
   // get length of data segment IMU
@@ -1080,16 +1000,6 @@ const LOGICSIGNALS_DATA& SafeVisionaryData::getLogicSignalsData() const
   return m_logicSignalsData;
 }
 
-const SAFETY_DATA& SafeVisionaryData::getSafetyData() const
-{
-  return m_safetyData;
-}
-
-const std::vector<uint8_t>& SafeVisionaryData::getSafetyStateMap() const
-{
-  return m_safetyStateMap;
-}
-
 bool SafeVisionaryData::hasConfigurationChecksum() const
 {
   return m_hasConfigurationChecksum;
@@ -1148,12 +1058,6 @@ void SafeVisionaryData::clearData(uint32_t changedCounter)
   if (!m_dataSetsActive.hasDataSetLogicSignals)
   {
     memset(&m_logicSignalsData, 0u, sizeof(m_logicSignalsData));
-  }
-
-  if (!m_dataSetsActive.hasDataSetSafety)
-  {
-    memset(&m_safetyData, 0u, sizeof(m_safetyData));
-    m_safetyStateMap.clear();
   }
 
   if (!m_dataSetsActive.hasDataSetIMU)

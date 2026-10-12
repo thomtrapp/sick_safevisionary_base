@@ -38,16 +38,6 @@ public:
     return parseRoiData(segment.begin(), segment.size());
   }
 
-  bool parseSafety(std::vector<uint8_t>& segment)
-  {
-    return parseSafetyData(segment.begin(), segment.size());
-  }
-
-  void setDimensions(int width, int height)
-  {
-    m_cameraParams.width  = width;
-    m_cameraParams.height = height;
-  }
 };
 
 template <typename T>
@@ -136,26 +126,6 @@ void testDynamicRoiCount()
   assert(data.getRoiData().roiData[4].id == 4u); // legacy five-entry view remains populated
 }
 
-void testSafetyStateMap()
-{
-  TestSafeVisionaryData data;
-  data.setDimensions(10, 2); // 20 pixels -> 3 packed bytes
-
-  std::vector<uint8_t> payload;
-  appendLittleEndian<uint32_t>(payload, 42u);
-  appendLittleEndian<uint16_t>(payload, 1u);
-  appendLittleEndian<uint16_t>(payload, 123u);
-  payload.push_back(0xa5u);
-  payload.push_back(0x5au);
-  payload.push_back(0x0fu);
-
-  auto segment = makeSegment(1u, payload);
-  assert(data.parseSafety(segment));
-  assert(data.getSafetyData().frameNumber == 42u);
-  assert(data.getSafetyData().safeLifeCounter == 123u);
-  assert(data.getSafetyStateMap().size() == 3u);
-  assert(data.getSafetyStateMap()[1] == 0x5au);
-}
 
 } // namespace
 
@@ -163,6 +133,5 @@ int main()
 {
   testDeviceStatusVersions();
   testDynamicRoiCount();
-  testSafetyStateMap();
   return 0;
 }

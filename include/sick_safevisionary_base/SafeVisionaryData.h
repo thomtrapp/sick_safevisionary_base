@@ -33,7 +33,6 @@
 #define LOCALIOS_SEGMENT 4
 #define FIELDINFORMATION_SEGMENT 5
 #define LOGICSIGNALS_SEGMENT 6
-#define SAFETY_SEGMENT 7
 #define IMU_SEGMENT 8
 
 namespace visionary {
@@ -194,9 +193,6 @@ enum class DataHandlerError
   INVALID_CRC_SEGMENT_LOGICSIGNALS,
   INVALID_LENGTH_SEGMENT_LOGICSIGNALS,
   INVALID_VERSION_SEGMENT_LOGICSIGNALS,
-  INVALID_CRC_SEGMENT_SAFETY,
-  INVALID_LENGTH_SEGMENT_SAFETY,
-  INVALID_VERSION_SEGMENT_SAFETY,
   INVALID_CRC_SEGMENT_IMU,
   INVALID_LENGTH_SEGMENT_IMU,
   INVALID_VERSION_SEGMENT_IMU
@@ -325,20 +321,6 @@ constexpr std::uint32_t MAX_LOGICSIGNALS_VALUES = 20u;
 struct LOGICSIGNALS_DATA
 {
   LOGICSIGNALS_ELEMENT logicSignals[MAX_LOGICSIGNALS_VALUES];
-};
-
-#pragma pack(pop)
-
-/*
- * Segment 7  Safety
- */
-#pragma pack(push, 1)
-
-struct SAFETY_DATA
-{
-  uint32_t frameNumber;
-  uint16_t flags;
-  uint16_t safeLifeCounter;
 };
 
 #pragma pack(pop)
@@ -508,9 +490,6 @@ protected:
   /// Parse the Logic Signals data from the Blob segment "Logic Signals".
   /// \return Returns true when parsing was successful.
   bool parseLogicSignalsData(std::vector<uint8_t>::iterator itBuf, size_t length);
-
-  /// Parse the Safety data from the Blob segment "Safety".
-  bool parseSafetyData(std::vector<uint8_t>::iterator itBuf, size_t length);
 
   /// Parse the IMU data from the Blob segment "IMU".
   /// \return Returns true when parsing was successful.
