@@ -409,9 +409,6 @@ public:
   /// \return received Logic Signal data
   const LOGICSIGNALS_DATA& getLogicSignalsData() const;
 
-  /// Gets the fixed fields of the Safety segment.
-  const SAFETY_DATA& getSafetyData() const;
-
   /// Gets the packed safety-state bitmap (one bit per depth-map pixel).
   const std::vector<uint8_t>& getSafetyStateMap() const;
 
@@ -540,8 +537,6 @@ private:
   // Contains the Logic Signal data
   LOGICSIGNALS_DATA m_logicSignalsData;
 
-  /// Contains the fixed Safety segment fields and its packed one-bit-per-pixel state map.
-  SAFETY_DATA m_safetyData;
   std::vector<uint8_t> m_safetyStateMap;
 
   // Contains the IMU data

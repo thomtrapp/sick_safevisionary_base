@@ -106,6 +106,14 @@ void testDeviceStatusVersions()
   assert(data.getDeviceStatusData().activeMonitoringCase.currentCaseNumberMonitoringCase4 == 4u);
 }
 
+void testUnsupportedDeviceStatusVersion()
+{
+  TestSafeVisionaryData data;
+  auto unsupported = makeSegment(3u, makeDeviceStatusPayload(false));
+  assert(!data.parseDeviceStatus(unsupported));
+  assert(data.getLastError() == visionary::DataHandlerError::INVALID_VERSION_SEGMENT_DEVICESTATUS);
+}
+
 void testDynamicRoiCount()
 {
   std::vector<uint8_t> payload;
@@ -132,6 +140,7 @@ void testDynamicRoiCount()
 int main()
 {
   testDeviceStatusVersions();
+  testUnsupportedDeviceStatusVersion();
   testDynamicRoiCount();
   return 0;
 }
