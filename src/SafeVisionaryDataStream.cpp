@@ -743,13 +743,30 @@ bool SafeVisionaryDataStream::getNextBlobUdp()
         break;
       }
 
+      if (udpProtocolData.fragmentNumber == 0U)
+      {
+        // The previous Blob was incomplete, but this packet is a valid start of
+        // the next Blob. Resynchronize immediately instead of comparing the
+        // new Blob number with the incomplete one.
+        if (udpProtocolData.dataLength > BLOB_SIZE_MAX)
+        {
+          m_lastDataStreamError = DataStreamError::INVALID_BLOB_HEADER;
+          break;
+        }
+
+        const auto payloadBegin = receiveBuffer.begin() + sizeof(UdpDataHeader);
+        m_blobDataBuffer.assign(
+          payloadBegin, payloadBegin + static_cast<std::ptrdiff_t>(udpProtocolData.dataLength));
+        m_blobNumber = udpProtocolData.blobNumber;
+        expectedFragmentNumber = 0U;
+        blobDataComplete = udpProtocolData.isLastFragment;
+        continue;
+      }
+
       if (m_blobNumber != udpProtocolData.blobNumber)
       {
-        //@todo Remove error message and start to receive a new Blob instead?
-        // a new Blob has started (and we missed the rest of the BLOB we were just reading)
-        std::printf("Unexpected Blob Number: expected value: %d, received value: %d\n",
-                    m_blobNumber,
-                    udpProtocolData.blobNumber);
+        // The beginning of the new Blob was also lost. Discard this fragment
+        // and let the next call resynchronize at the next fragment zero.
         m_lastDataStreamError = DataStreamError::INVALID_BLOB_NUMBER;
         break;
       }
